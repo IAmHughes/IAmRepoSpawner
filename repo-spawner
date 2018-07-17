@@ -1,2 +1,185 @@
 #!/bin/sh
 #/
+#/ NAME:
+#/ repo-spawner - Creates n number of repositories with <name-of-repo>n convention
+#/ for the given user or organization.
+#/
+#/ SYNOPSIS:
+#/ repo-spawner [-o=<org_name>] [-u=<username>] [-n=<number-of-repos>] [-r=<repo-name>]
+#/
+#/ DESCRIPTION:
+#/ Creates n repositories for the user (if -u=<username> is used) or for an
+#/ organization (if -o=<org_name> is used instead) with the name <repo-name><n>.
+#/ If the name already exists, it will skip and continue to the next iteration.
+#/
+#/ PRE-REQUISITES:
+#/ Before running this script, you must create a Personal Access Token (PAT)
+#/ at https://help.github.com/articles/creating-a-personal-access-token-for-the-command-line/
+#/ with the permissions <repo> and <admin:org> scopes. Read more
+#/ about scopes here: https://developer.github.com/apps/building-oauth-apps/scopes-for-oauth-apps/
+#/ Once created, you must export your PAT as an environment variable
+#/ named <GITHUB_TOKEN>.
+#/   * Exporting PAT as GITHUB_TOKEN
+#/   $ export GITHUB_TOKEN=abcd1234efg567
+#/
+#/ OPTIONS:
+#/ --org
+#/ -o
+#/ When running the tool, this flag sets the API endpoint to point to an
+#/ organization (specififed by -o=<org_name>), creating the repos under that
+#/ organization
+#/   * _NOTE:_ Can NOT be used with the -u option.
+#/
+#/ --user
+#/ -u
+#/ When running the tool, this flag sets the API endpoint to point to a user
+#/ (specified by -u=<username>), creating the repos under that account.
+#/   * _NOTE:_ Can NOT be used with the -o option.
+#/
+#/ --number
+#/ -n
+#/ When running the tool, this flag denotes the number of repos to create.
+#/
+#/ --repo
+#/ -r
+#/ When running the tool, this flag denotes the name of each repo to be created.
+#/ The name will be appended with <n>, i.e. MyRepo1, MyRepo2, MyRepo3, etc.
+#/
+#/ EXAMPLES:
+#/
+#/   * Lists repos under user account `IAmHughes` that are available to be deleted.
+#/   $ bash repo-cleaner -u=IAmHughes
+#/
+#/   * Deletes repos under org "TheBeardedTom" that are named "Test_Repo_*"
+#/     For example, Test_Repo_, Test_Repo_qa, Test_Repo_234, etc.
+#/   $ bash repo-cleaner -o=TheBeardedTom -s=Test_Repo_
+#/
+#/   * Deletes repos under user "IAmHughes" that are named "MyRepo*"
+#/     For example, MyRepo, MyRepo1, MyRepo99, MyRepoQA, etc.
+#/   $ bash repo-cleaner -u=IAmHughes -s=MyRepo
+#/
+#/ API DOCUMENTATION:
+#/ All documentation can be found at https://developer.github.com/v3/
+
+# Parse options
+for i in "$@"
+do
+  case $i in
+    -o=*|--org=*)
+    ORG="${i#*=}"
+    shift
+    ;;
+    -u=*|--user=*)
+    USERNAME="${i#*=}"
+    shift
+    ;;
+    -n=*|--number=*)
+    NUMBER="${i#*=}"
+    shift
+    ;;
+    -r=*|--repo=*)
+    REPO_NAME="${i#*=}"
+    shift
+    ;;
+    *)
+    # unknown option
+    ;;
+  esac
+done
+
+API_ROOT="https://api.github.com"
+
+# Verify Inputs
+# Must set either org or user.
+if [[ -z ${ORG} ]] && [[ -z ${USERNAME} ]]; then
+    echo "No user or org was given. Please use either -u=<username> or -o=<org_name>"
+    echo "  Ex: bash repo-spawner -u=IAmHughes -n=10 -r=TestRepo"
+    echo ""
+    echo "Exiting script with no changes."
+    echo ""
+    exit 1
+fi
+
+# Cannot set BOTH org and user.
+if [[ ${ORG} ]] && [[ ${USERNAME} ]]; then
+  echo "Cannot set both an org and user. You must use either -u=<username> or -o=<org_name>, "
+  echo "not both."
+  echo "  Ex: bash repo-spawner -u=IAmHughes -n=10 -r=TestRepo"
+  echo ""
+  echo "Exiting script with no changes."
+  echo ""
+  exit 1
+fi
+
+# Number null check, must provide number of repos to create
+if [[ -z ${NUMBER} ]]; then
+  echo "No repository number was given. Must provide the number of repositories you "
+  echo "want to create."
+  echo "  Ex: bash repo-spawner -u=IAmHughes -n=10 -r=TestRepo"
+  echo ""
+  echo "Exiting script with no changes."
+  echo ""
+  exit 1
+fi
+
+# Repo Name null check, must provide name to create repos.
+if [[ -z ${REPO_NAME} ]]; then
+  echo "No repository name was given. Must provide a name for the repositories you "
+  echo "want to create."
+  echo "  Ex: bash repo-spawner -u=IAmHughes -n=10 -r=TestRepo"
+  echo ""
+  echo "Exiting script with no changes."
+  echo ""
+  exit 1
+fi
+
+# Set API_ENDPOINT as either user or org for repo creation
+if [[ ${USERNAME} ]]; then
+  OWNER=${USERNAME}
+  API_ENDPOINT=${API_ROOT}"/user/repos"
+elif [[ ${ORG} ]]; then
+  OWNER=${ORG}
+  API_ENDPOINT=${API_ROOT}"/orgs/"${OWNER}"/repos"
+fi
+
+# Create n repos with name REPO_NAMEi via GitHub API
+# i.e. Repo1, Repo2, Repo3, etc.
+for (( i = 1; i <= n; i++ ));
+do
+
+  # Verify repo doesn't already exist to avoid creation error.
+  # Get list of repos for owner to check in loop.
+  GET_RESPONSE="$(curl --request GET \
+  --url $API_ROOT"/repos/"${OWNER}"/"${REPO_NAME}${i} \
+  --header "content-type: application/json")"
+
+  # Loop through list of repos. If ${STRING_MATCH} has a pattern, delete those
+  # repos, otherwise just display the list of repos returned.
+  for repo in $(echo "${GET_RESPONSE}" | jq -r '.[] | @base64');
+  do
+    get_repo_name()
+    {
+      echo ${repo} | base64 --decode | jq -r ${1}
+    }
+
+    EXISTING_NAME=$(get_repo_name '.name')
+
+    # Check if existing repo is same as current iteration, if so continue loop,
+    # otherwise create the repo.
+    if [[ ${EXISTING_NAME} == ${REPO_NAME}${i} ]]; then
+      echo "Repo with "${REPO_NAME}${i}" already exists."
+      continue;
+    else
+      echo "Creating repo with name: "${REPO_NAME}${i}"."
+      CREATE_RESPONSE="$(curl --request POST \
+        --url ${API_ENDPOINT} \
+        --header "authorization: Bearer ${GITHUB_TOKEN}" \
+        --header "content-type: application/json" \
+        --data "{
+      	"name":"${REPO_NAME}${i}"
+      }")"
+    fi
+
+  done
+
+done
